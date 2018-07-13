@@ -884,3 +884,34 @@ func (s *Shell) SwarmPeers(verbose, streams, latency bool) (*PeersList, error) {
 
 	return list, nil
 }
+
+// Receipt : Receipt
+type Receipt struct {
+	Peer      string
+	Value     float64
+	Sent      uint64
+	Recv      uint64
+	Exchanged uint64
+}
+
+// BitswapLedger : Show the current ledger for a peer.
+func (s *Shell) BitswapLedger(arg ...string) (*Receipt, error) {
+	resp, err := s.newRequest(context.Background(), "bitswap/ledger", arg...).Send(s.httpcli)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Close()
+
+	if resp.Error != nil {
+		return nil, resp.Error
+	}
+
+	dec := json.NewDecoder(resp.Output)
+	info := new(Receipt)
+	err = dec.Decode(info)
+	if err != nil {
+		return nil, err
+	}
+
+	return info, nil
+}
