@@ -831,3 +831,56 @@ func (s *Shell) ObjectStat(key string) (*ObjectStats, error) {
 
 	return stat, nil
 }
+
+type streamInfo struct {
+	Protocol string
+}
+
+type connInfo struct {
+	Addr    string
+	Peer    string
+	Latency string
+	Muxer   string
+	Streams []streamInfo
+}
+
+// PeersList :
+type PeersList struct {
+	Peers []connInfo
+}
+
+// SwarmPeers : List peers with open connections.
+func (s *Shell) SwarmPeers(verbose, streams, latency bool) (*PeersList, error) {
+
+	req := s.newRequest(context.Background(), "swarm/peers")
+	if verbose {
+		req.Opts["verbose"] = "true"
+	}
+
+	if streams {
+		req.Opts["streams"] = "true"
+	}
+
+	if latency {
+		req.Opts["latency"] = "true"
+	}
+
+	resp, err := req.Send(s.httpcli)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Close()
+
+	if resp.Error != nil {
+		return nil, resp.Error
+	}
+
+	dec := json.NewDecoder(resp.Output)
+	list := new(PeersList)
+	err = dec.Decode(list)
+	if err != nil {
+		return nil, err
+	}
+
+	return list, nil
+}
