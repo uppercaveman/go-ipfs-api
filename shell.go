@@ -876,9 +876,8 @@ func (s *Shell) SwarmPeers(verbose, streams, latency bool) (*PeersList, error) {
 		return nil, resp.Error
 	}
 
-	dec := json.NewDecoder(resp.Output)
 	list := new(PeersList)
-	err = dec.Decode(list)
+	err = json.NewDecoder(resp.Output).Decode(list)
 	if err != nil {
 		return nil, err
 	}
@@ -907,9 +906,8 @@ func (s *Shell) BitswapLedger(arg ...string) (*Receipt, error) {
 		return nil, resp.Error
 	}
 
-	dec := json.NewDecoder(resp.Output)
 	info := new(Receipt)
-	err = dec.Decode(info)
+	err = json.NewDecoder(resp.Output).Decode(info)
 	if err != nil {
 		return nil, err
 	}
@@ -929,13 +927,11 @@ func (s *Shell) IpfsLs(arg string) (*ls.LsOutput, error) {
 		return nil, resp.Error
 	}
 
-	dec := json.NewDecoder(resp.Output)
 	info := new(ls.LsOutput)
-	err = dec.Decode(info)
+	err = json.NewDecoder(resp.Output).Decode(info)
 	if err != nil {
 		return nil, err
 	}
-	fmt.Println(info)
 
 	return info, nil
 }
