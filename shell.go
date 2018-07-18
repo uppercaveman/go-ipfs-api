@@ -930,8 +930,13 @@ type IpfsLsObject struct {
 	Links []LsLink
 }
 
+// IpfsLsOutput :
+type IpfsLsOutput struct {
+	Links []IpfsLsObject
+}
+
 // IpfsLs : List directory contents for Unix filesystem objects. 分片对象列表
-func (s *Shell) IpfsLs(arg ...string) (*IpfsLsObject, error) {
+func (s *Shell) IpfsLs(arg ...string) (*IpfsLsOutput, error) {
 	resp, err := s.newRequest(context.Background(), "ls", arg...).Send(s.httpcli)
 	if err != nil {
 		return nil, err
@@ -943,7 +948,7 @@ func (s *Shell) IpfsLs(arg ...string) (*IpfsLsObject, error) {
 	}
 
 	dec := json.NewDecoder(resp.Output)
-	info := new(IpfsLsObject)
+	info := new(IpfsLsOutput)
 	err = dec.Decode(info)
 	if err != nil {
 		return nil, err
