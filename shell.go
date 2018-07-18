@@ -19,7 +19,7 @@ import (
 	homedir "github.com/mitchellh/go-homedir"
 	ma "github.com/multiformats/go-multiaddr"
 	manet "github.com/multiformats/go-multiaddr-net"
-	unixfspb "github.com/uppercaveman/go-ipfs-api/unixfs/pb"
+	ls "github.com/uppercaveman/go-ipfs-api/model/ls"
 	tar "github.com/whyrusleeping/tar-utils"
 )
 
@@ -917,27 +917,9 @@ func (s *Shell) BitswapLedger(arg ...string) (*Receipt, error) {
 	return info, nil
 }
 
-// IpfsLsLink : ipfs ls
-type IpfsLsLink struct {
-	Name, Hash string
-	Size       uint64
-	Type       unixfspb.Data_DataType
-}
-
-// IpfsLsObject : ipfs ls
-type IpfsLsObject struct {
-	Hash  string
-	Links []LsLink
-}
-
-// IpfsLsOutput :
-type IpfsLsOutput struct {
-	Links []IpfsLsObject
-}
-
 // IpfsLs : List directory contents for Unix filesystem objects. 分片对象列表
-func (s *Shell) IpfsLs(arg ...string) (*IpfsLsOutput, error) {
-	resp, err := s.newRequest(context.Background(), "ls", arg...).Send(s.httpcli)
+func (s *Shell) IpfsLs(arg string) (*ls.LsOutput, error) {
+	resp, err := s.newRequest(context.Background(), "ls", arg).Send(s.httpcli)
 	if err != nil {
 		return nil, err
 	}
@@ -948,11 +930,12 @@ func (s *Shell) IpfsLs(arg ...string) (*IpfsLsOutput, error) {
 	}
 
 	dec := json.NewDecoder(resp.Output)
-	info := new(IpfsLsOutput)
+	info := new(ls.LsOutput)
 	err = dec.Decode(info)
 	if err != nil {
 		return nil, err
 	}
+	fmt.Println(info)
 
 	return info, nil
 }
