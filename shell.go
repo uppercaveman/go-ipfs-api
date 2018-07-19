@@ -1,6 +1,6 @@
-// package shell implements a remote API interface for a running ipfs daemon
 package shell
 
+// package shell implements a remote API interface for a running ipfs daemon
 import (
 	"bytes"
 	"context"
@@ -16,11 +16,13 @@ import (
 	"time"
 
 	files "github.com/ipfs/go-ipfs-cmdkit/files"
+	p2pmetrics "github.com/libp2p/go-libp2p-metrics"
 	homedir "github.com/mitchellh/go-homedir"
 	ma "github.com/multiformats/go-multiaddr"
 	manet "github.com/multiformats/go-multiaddr-net"
-	ls "github.com/uppercaveman/go-ipfs-api/model/ls"
 	tar "github.com/whyrusleeping/tar-utils"
+
+	"github.com/uppercaveman/go-ipfs-api/model/ls"
 )
 
 const (
@@ -89,8 +91,12 @@ func (s *Shell) SetTimeout(d time.Duration) {
 	s.httpcli.Timeout = d
 }
 
-func (s *Shell) newRequest(ctx context.Context, command string, args ...string) *Request {
-	return NewRequest(ctx, s.url, command, args...)
+func (s *Shell) Request(command string, args ...string) *RequestBuilder {
+	return &RequestBuilder{
+		command: command,
+		args:    args,
+		shell:   s,
+	}
 }
 
 type IdOutput struct {
@@ -110,29 +116,16 @@ func (s *Shell) ID(peer ...string) (*IdOutput, error) {
 		return nil, fmt.Errorf("Too many peer arguments")
 	}
 
-	resp, err := NewRequest(context.Background(), s.url, "id", peer...).Send(s.httpcli)
-	if err != nil {
+	var out IdOutput
+	if err := s.Request("id", peer...).Exec(context.Background(), &out); err != nil {
 		return nil, err
 	}
-
-	defer resp.Close()
-	if resp.Error != nil {
-		return nil, resp.Error
-	}
-
-	decoder := json.NewDecoder(resp.Output)
-	out := new(IdOutput)
-	err = decoder.Decode(out)
-	if err != nil {
-		return nil, err
-	}
-
-	return out, nil
+	return &out, nil
 }
 
 // Cat the content at the given path. Callers need to drain and close the returned reader after usage.
 func (s *Shell) Cat(path string) (io.ReadCloser, error) {
-	resp, err := NewRequest(context.Background(), s.url, "cat", path).Send(s.httpcli)
+	resp, err := s.Request("cat", path).Send(context.Background())
 	if err != nil {
 		return nil, err
 	}
@@ -170,33 +163,13 @@ func (s *Shell) AddWithOpts(r io.Reader, pin bool, rawLeaves bool) (string, erro
 	slf := files.NewSliceFile("", "", []files.File{fr})
 	fileReader := files.NewMultiFileReader(slf, true)
 
-	req := NewRequest(context.Background(), s.url, "add")
-	req.Body = fileReader
-	req.Opts["progress"] = "false"
-	if !pin {
-		req.Opts["pin"] = "false"
-	}
-
-	if rawLeaves {
-		req.Opts["raw-leaves"] = "true"
-	}
-
-	resp, err := req.Send(s.httpcli)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Close()
-	if resp.Error != nil {
-		return "", resp.Error
-	}
-
 	var out object
-	err = json.NewDecoder(resp.Output).Decode(&out)
-	if err != nil {
-		return "", err
-	}
-
-	return out.Hash, nil
+	return out.Hash, s.Request("add").
+		Option("progress", false).
+		Option("pin", pin).
+		Option("raw-leaves", rawLeaves).
+		Body(fileReader).
+		Exec(context.Background(), &out)
 }
 
 func (s *Shell) AddLink(target string) (string, error) {
@@ -204,25 +177,8 @@ func (s *Shell) AddLink(target string) (string, error) {
 	slf := files.NewSliceFile("", "", []files.File{link})
 	reader := files.NewMultiFileReader(slf, true)
 
-	req := s.newRequest(context.Background(), "add")
-	req.Body = reader
-
-	resp, err := req.Send(s.httpcli)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Close()
-	if resp.Error != nil {
-		return "", resp.Error
-	}
-
 	var out object
-	err = json.NewDecoder(resp.Output).Decode(&out)
-	if err != nil {
-		return "", err
-	}
-
-	return out.Hash, nil
+	return out.Hash, s.Request("add").Body(reader).Exec(context.Background(), &out)
 }
 
 // AddDir adds a directory recursively with all of the files under it
@@ -239,15 +195,17 @@ func (s *Shell) AddDir(dir string) (string, error) {
 	slf := files.NewSliceFile("", dir, []files.File{sf})
 	reader := files.NewMultiFileReader(slf, true)
 
-	req := NewRequest(context.Background(), s.url, "add")
-	req.Opts["r"] = "true"
-	req.Body = reader
+	resp, err := s.Request("add").
+		Option("recursive", true).
+		Body(reader).
+		Send(context.Background())
 
-	resp, err := req.Send(s.httpcli)
 	if err != nil {
-		return "", err
+		return "", nil
 	}
+
 	defer resp.Close()
+
 	if resp.Error != nil {
 		return "", resp.Error
 	}
@@ -281,6 +239,19 @@ const (
 	TSymlink
 )
 
+// List entries at the given path
+func (s *Shell) List(path string) ([]*LsLink, error) {
+	var out struct{ Objects []LsObject }
+	err := s.Request("ls", path).Exec(context.Background(), &out)
+	if err != nil {
+		return nil, err
+	}
+	if len(out.Objects) != 1 {
+		return nil, errors.New("bad response from server")
+	}
+	return out.Objects[0].Links, nil
+}
+
 type LsLink struct {
 	Hash string
 	Name string
@@ -293,59 +264,18 @@ type LsObject struct {
 	LsLink
 }
 
-// List entries at the given path
-func (s *Shell) List(path string) ([]*LsLink, error) {
-	resp, err := NewRequest(context.Background(), s.url, "ls", path).Send(s.httpcli)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Close()
-
-	if resp.Error != nil {
-		return nil, resp.Error
-	}
-
-	var out struct{ Objects []LsObject }
-	err = json.NewDecoder(resp.Output).Decode(&out)
-	if err != nil {
-		return nil, err
-	}
-
-	return out.Objects[0].Links, nil
-}
-
 // Pin the given path
 func (s *Shell) Pin(path string) error {
-	req := NewRequest(context.Background(), s.url, "pin/add", path)
-	req.Opts["r"] = "true"
-
-	resp, err := req.Send(s.httpcli)
-	if err != nil {
-		return err
-	}
-	defer resp.Close()
-	if resp.Error != nil {
-		return resp.Error
-	}
-
-	return nil
+	return s.Request("pin/add", path).
+		Option("recursive", true).
+		Exec(context.Background(), nil)
 }
 
 // Unpin the given path
 func (s *Shell) Unpin(path string) error {
-	req := NewRequest(context.Background(), s.url, "pin/rm", path)
-	req.Opts["r"] = "true"
-
-	resp, err := req.Send(s.httpcli)
-	if err != nil {
-		return err
-	}
-	defer resp.Close()
-	if resp.Error != nil {
-		return resp.Error
-	}
-
-	return nil
+	return s.Request("pin/rm", path).
+		Option("recursive", true).
+		Exec(context.Background(), nil)
 }
 
 const (
@@ -364,23 +294,8 @@ type PinInfo struct {
 // than unordered array searching. The map is likely to be more useful to a
 // client than a flat list.
 func (s *Shell) Pins() (map[string]PinInfo, error) {
-	resp, err := s.newRequest(context.Background(), "pin/ls").Send(s.httpcli)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Close()
-
-	if resp.Error != nil {
-		return nil, resp.Error
-	}
-
-	raw := struct{ Keys map[string]PinInfo }{}
-	err = json.NewDecoder(resp.Output).Decode(&raw)
-	if err != nil {
-		return nil, err
-	}
-
-	return raw.Keys, nil
+	var raw struct{ Keys map[string]PinInfo }
+	return raw.Keys, s.Request("pin/ls").Exec(context.Background(), &raw)
 }
 
 type PeerInfo struct {
@@ -389,40 +304,26 @@ type PeerInfo struct {
 }
 
 func (s *Shell) FindPeer(peer string) (*PeerInfo, error) {
-	resp, err := s.newRequest(context.Background(), "dht/findpeer", peer).Send(s.httpcli)
+	var peers struct{ Responses []PeerInfo }
+	err := s.Request("dht/findpeer", peer).Exec(context.Background(), &peers)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Close()
-
-	if resp.Error != nil {
-		return nil, resp.Error
-	}
-
-	str := struct{ Responses []PeerInfo }{}
-	err = json.NewDecoder(resp.Output).Decode(&str)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(str.Responses) == 0 {
+	if len(peers.Responses) == 0 {
 		return nil, errors.New("peer not found")
 	}
-
-	return &str.Responses[0], nil
+	return &peers.Responses[0], nil
 }
 
 func (s *Shell) Refs(hash string, recursive bool) (<-chan string, error) {
-	req := s.newRequest(context.Background(), "refs", hash)
-	if recursive {
-		req.Opts["r"] = "true"
-	}
-
-	resp, err := req.Send(s.httpcli)
+	resp, err := s.Request("refs", hash).
+		Option("recursive", recursive).
+		Send(context.Background())
 	if err != nil {
 		return nil, err
 	}
 
+	defer resp.Close()
 	if resp.Error != nil {
 		return nil, resp.Error
 	}
@@ -432,7 +333,6 @@ func (s *Shell) Refs(hash string, recursive bool) (<-chan string, error) {
 		var ref struct {
 			Ref string
 		}
-		defer resp.Close()
 		defer close(out)
 		dec := json.NewDecoder(resp.Output)
 		for {
@@ -450,25 +350,14 @@ func (s *Shell) Refs(hash string, recursive bool) (<-chan string, error) {
 }
 
 func (s *Shell) Patch(root, action string, args ...string) (string, error) {
-	cmdargs := append([]string{root}, args...)
-	resp, err := s.newRequest(context.Background(), "object/patch/"+action, cmdargs...).Send(s.httpcli)
+	info := new(object)
+	err := s.Request("object/patch/"+action, root).
+		Arguments(args...).
+		Exec(context.Background(), info)
 	if err != nil {
 		return "", err
 	}
-	defer resp.Close()
-
-	if resp.Error != nil {
-		return "", resp.Error
-	}
-
-	dec := json.NewDecoder(resp.Output)
-	var out object
-	err = dec.Decode(&out)
-	if err != nil {
-		return "", err
-	}
-
-	return out.Hash, nil
+	return info.Hash, nil
 }
 
 func (s *Shell) PatchData(root string, set bool, data interface{}) (string, error) {
@@ -493,58 +382,29 @@ func (s *Shell) PatchData(root string, set bool, data interface{}) (string, erro
 	slf := files.NewSliceFile("", "", []files.File{fr})
 	fileReader := files.NewMultiFileReader(slf, true)
 
-	req := s.newRequest(context.Background(), "object/patch/"+cmd, root)
-	req.Body = fileReader
-
-	resp, err := req.Send(s.httpcli)
+	info := new(object)
+	err := s.Request("object/patch/"+cmd, root).
+		Body(fileReader).
+		Exec(context.Background(), info)
 	if err != nil {
 		return "", err
 	}
-	defer resp.Close()
-
-	if resp.Error != nil {
-		return "", resp.Error
-	}
-
-	dec := json.NewDecoder(resp.Output)
-	var out object
-	err = dec.Decode(&out)
-	if err != nil {
-		return "", err
-	}
-
-	return out.Hash, nil
+	return info.Hash, nil
 }
 
 func (s *Shell) PatchLink(root, path, childhash string, create bool) (string, error) {
-	cmdargs := []string{root, path, childhash}
-
-	req := s.newRequest(context.Background(), "object/patch/add-link", cmdargs...)
-	if create {
-		req.Opts["create"] = "true"
-	}
-
-	resp, err := req.Send(s.httpcli)
+	info := new(object)
+	err := s.Request("object/patch/add-link", root, path, childhash).
+		Option("create", true).
+		Exec(context.Background(), info)
 	if err != nil {
 		return "", err
 	}
-	defer resp.Close()
-
-	if resp.Error != nil {
-		return "", resp.Error
-	}
-
-	var out object
-	err = json.NewDecoder(resp.Output).Decode(&out)
-	if err != nil {
-		return "", err
-	}
-
-	return out.Hash, nil
+	return info.Hash, nil
 }
 
 func (s *Shell) Get(hash, outdir string) error {
-	resp, err := s.newRequest(context.Background(), "get", hash).Send(s.httpcli)
+	resp, err := s.Request("get", hash).Option("create", true).Send(context.Background())
 	if err != nil {
 		return err
 	}
@@ -559,76 +419,36 @@ func (s *Shell) Get(hash, outdir string) error {
 }
 
 func (s *Shell) NewObject(template string) (string, error) {
-	args := []string{}
-	if template != "" {
-		args = []string{template}
-	}
-
-	resp, err := s.newRequest(context.Background(), "object/new", args...).Send(s.httpcli)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Close()
-
-	if resp.Error != nil {
-		return "", resp.Error
-	}
-
 	var out object
-	err = json.NewDecoder(resp.Output).Decode(&out)
-	if err != nil {
-		return "", err
+	req := s.Request("object/new")
+	if template != "" {
+		req.Arguments(template)
 	}
-
-	return out.Hash, nil
+	return out.Hash, req.Exec(context.Background(), &out)
 }
 
 func (s *Shell) ResolvePath(path string) (string, error) {
-	resp, err := s.newRequest(context.Background(), "resolve", path).Send(s.httpcli)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Close()
-
-	if resp.Error != nil {
-		return "", resp.Error
-	}
-
 	var out struct {
 		Path string
 	}
-	err = json.NewDecoder(resp.Output).Decode(&out)
+	err := s.Request("resolve", path).Exec(context.Background(), &out)
 	if err != nil {
 		return "", err
 	}
 
-	p := strings.TrimPrefix(out.Path, "/ipfs/")
-
-	return p, nil
+	return strings.TrimPrefix(out.Path, "/ipfs/"), nil
 }
 
 // returns ipfs version and commit sha
 func (s *Shell) Version() (string, string, error) {
-	resp, err := s.newRequest(context.Background(), "version").Send(s.httpcli)
-	if err != nil {
-		return "", "", err
-	}
-
-	defer resp.Close()
-	if resp.Error != nil {
-		return "", "", resp.Error
-	}
-
 	ver := struct {
 		Version string
 		Commit  string
 	}{}
 
-	err = json.NewDecoder(resp.Output).Decode(&ver)
-	if err != nil {
+	if err := s.Request("version").Exec(context.Background(), &ver); err != nil {
 		return "", "", err
 	}
-
 	return ver.Version, ver.Commit, nil
 }
 
@@ -638,31 +458,20 @@ func (s *Shell) IsUp() bool {
 }
 
 func (s *Shell) BlockStat(path string) (string, int, error) {
-	resp, err := s.newRequest(context.Background(), "block/stat", path).Send(s.httpcli)
-	if err != nil {
-		return "", 0, err
-	}
-	defer resp.Close()
-
-	if resp.Error != nil {
-		return "", 0, resp.Error
-	}
-
 	var inf struct {
 		Key  string
 		Size int
 	}
 
-	err = json.NewDecoder(resp.Output).Decode(&inf)
+	err := s.Request("block/stat", path).Exec(context.Background(), &inf)
 	if err != nil {
 		return "", 0, err
 	}
-
 	return inf.Key, inf.Size, nil
 }
 
 func (s *Shell) BlockGet(path string) ([]byte, error) {
-	resp, err := s.newRequest(context.Background(), "block/get", path).Send(s.httpcli)
+	resp, err := s.Request("block/get", path).Send(context.Background())
 	if err != nil {
 		return nil, err
 	}
@@ -676,38 +485,26 @@ func (s *Shell) BlockGet(path string) ([]byte, error) {
 }
 
 func (s *Shell) BlockPut(block []byte, format, mhtype string, mhlen int) (string, error) {
+	var info struct {
+		Key string
+	}
+
 	data := bytes.NewReader(block)
 	rc := ioutil.NopCloser(data)
 	fr := files.NewReaderFile("", "", rc, nil)
 	slf := files.NewSliceFile("", "", []files.File{fr})
 	fileReader := files.NewMultiFileReader(slf, true)
 
-	req := s.newRequest(context.Background(), "block/put")
-	req.Body = fileReader
-	req.Opts = map[string]string{
-		"mhtype": mhtype,
-		"mhlen":  fmt.Sprintf("%d", mhlen),
-		"format": format,
-	}
-	resp, err := req.Send(s.httpcli)
+	err := s.Request("block/put").
+		Option("mhtype", mhtype).
+		Option("format", format).
+		Option("mhlen", mhlen).
+		Body(fileReader).
+		Exec(context.Background(), &info)
 	if err != nil {
 		return "", err
 	}
-	defer resp.Close()
-
-	if resp.Error != nil {
-		return "", resp.Error
-	}
-
-	var out struct {
-		Key string
-	}
-	err = json.NewDecoder(resp.Output).Decode(&out)
-	if err != nil {
-		return "", err
-	}
-
-	return out.Key, nil
+	return info.Key, nil
 }
 
 type IpfsObject struct {
@@ -721,84 +518,51 @@ type ObjectLink struct {
 }
 
 func (s *Shell) ObjectGet(path string) (*IpfsObject, error) {
-	resp, err := s.newRequest(context.Background(), "object/get", path).Send(s.httpcli)
+	info := new(IpfsObject)
+	err := s.Request("object/get", path).Exec(context.Background(), info)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Close()
-
-	if resp.Error != nil {
-		return nil, resp.Error
-	}
-
-	var obj IpfsObject
-	err = json.NewDecoder(resp.Output).Decode(&obj)
-	if err != nil {
-		return nil, err
-	}
-
-	return &obj, nil
+	return info, nil
 }
 
 func (s *Shell) ObjectPut(obj *IpfsObject) (string, error) {
-	data := new(bytes.Buffer)
-	err := json.NewEncoder(data).Encode(obj)
+	var data bytes.Buffer
+	err := json.NewEncoder(&data).Encode(obj)
 	if err != nil {
 		return "", err
 	}
 
-	rc := ioutil.NopCloser(data)
+	rc := ioutil.NopCloser(&data)
 
 	fr := files.NewReaderFile("", "", rc, nil)
 	slf := files.NewSliceFile("", "", []files.File{fr})
 	fileReader := files.NewMultiFileReader(slf, true)
 
-	req := s.newRequest(context.Background(), "object/put")
-	req.Body = fileReader
-	resp, err := req.Send(s.httpcli)
+	info := new(object)
+	err = s.Request("object/put").Body(fileReader).Exec(context.Background(), info)
 	if err != nil {
 		return "", err
 	}
-	defer resp.Close()
-
-	if resp.Error != nil {
-		return "", resp.Error
-	}
-
-	var out object
-	err = json.NewDecoder(resp.Output).Decode(&out)
-	if err != nil {
-		return "", err
-	}
-
-	return out.Hash, nil
+	return info.Hash, nil
 }
 
 func (s *Shell) PubSubSubscribe(topic string) (*PubSubSubscription, error) {
 	// connect
-	req := s.newRequest(context.Background(), "pubsub/sub", topic)
-
-	resp, err := req.Send(s.httpcli)
+	resp, err := s.Request("pubsub/sub", topic).Send(context.Background())
 	if err != nil {
 		return nil, err
 	}
-
 	return newPubSubSubscription(resp), nil
 }
 
 func (s *Shell) PubSubPublish(topic, data string) (err error) {
-	resp, err := s.newRequest(context.Background(), "pubsub/pub", topic, data).Send(s.httpcli)
+	resp, err := s.Request("pubsub/pub", topic, data).Send(context.Background())
 	if err != nil {
-		return
+		return err
 	}
-	defer func() {
-		err1 := resp.Close()
-		if err == nil {
-			err = err1
-		}
-	}()
-
-	return nil
+	defer resp.Close()
+	return resp.Error
 }
 
 type ObjectStats struct {
@@ -813,76 +577,54 @@ type ObjectStats struct {
 // ObjectStat gets stats for the DAG object named by key. It returns
 // the stats of the requested Object or an error.
 func (s *Shell) ObjectStat(key string) (*ObjectStats, error) {
-	resp, err := s.newRequest(context.Background(), "object/stat", key).Send(s.httpcli)
+	stat := new(ObjectStats)
+	err := s.Request("object/stat", key).Exec(context.Background(), stat)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Close()
-
-	if resp.Error != nil {
-		return nil, resp.Error
-	}
-
-	stat := &ObjectStats{}
-
-	err = json.NewDecoder(resp.Output).Decode(stat)
-	if err != nil {
-		return nil, err
-	}
-
 	return stat, nil
 }
 
-type streamInfo struct {
+// ObjectStat gets stats for the DAG object named by key. It returns
+// the stats of the requested Object or an error.
+func (s *Shell) StatsBW() (*p2pmetrics.Stats, error) {
+	info := new(p2pmetrics.Stats)
+	err := s.Request("stats/bw").Exec(context.Background(), &info)
+	if err != nil {
+		return nil, err
+	}
+	return info, err
+}
+
+type SwarmStreamInfo struct {
 	Protocol string
 }
 
-type connInfo struct {
+type SwarmConnInfo struct {
 	Addr    string
 	Peer    string
 	Latency string
 	Muxer   string
-	Streams []streamInfo
+	Streams []SwarmStreamInfo
 }
 
-// PeersList :
-type PeersList struct {
-	Peers []connInfo
+type SwarmConnInfos struct {
+	Peers []SwarmConnInfo
 }
 
-// SwarmPeers : List peers with open connections.
-func (s *Shell) SwarmPeers(verbose, streams, latency bool) (*PeersList, error) {
+// SwarmPeers gets all the swarm peers
+func (s *Shell) SwarmPeers(verbose, streams, latency bool) (*SwarmConnInfos, error) {
+	info := new(SwarmConnInfos)
 
-	req := s.newRequest(context.Background(), "swarm/peers")
-	if verbose {
-		req.Opts["verbose"] = "true"
-	}
-
-	if streams {
-		req.Opts["streams"] = "true"
-	}
-
-	if latency {
-		req.Opts["latency"] = "true"
-	}
-
-	resp, err := req.Send(s.httpcli)
+	err := s.Request("swarm/peers").
+		Option("verbose", verbose).
+		Option("streams", streams).
+		Option("latency", latency).
+		Exec(context.Background(), info)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Close()
-
-	if resp.Error != nil {
-		return nil, resp.Error
-	}
-
-	list := new(PeersList)
-	err = json.NewDecoder(resp.Output).Decode(list)
-	if err != nil {
-		return nil, err
-	}
-
-	return list, nil
+	return info, nil
 }
 
 // Receipt : Receipt
@@ -896,42 +638,20 @@ type Receipt struct {
 
 // BitswapLedger : Show the current ledger for a peer.
 func (s *Shell) BitswapLedger(arg ...string) (*Receipt, error) {
-	resp, err := s.newRequest(context.Background(), "bitswap/ledger", arg...).Send(s.httpcli)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Close()
-
-	if resp.Error != nil {
-		return nil, resp.Error
-	}
-
 	info := new(Receipt)
-	err = json.NewDecoder(resp.Output).Decode(info)
+	err := s.Request("bitswap/ledger", arg...).Exec(context.Background(), info)
 	if err != nil {
 		return nil, err
 	}
-
 	return info, nil
 }
 
 // IpfsLs : List directory contents for Unix filesystem objects. 分片对象列表
 func (s *Shell) IpfsLs(arg string) (*ls.LsOutput, error) {
-	resp, err := s.newRequest(context.Background(), "ls", arg).Send(s.httpcli)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Close()
-
-	if resp.Error != nil {
-		return nil, resp.Error
-	}
-
 	info := new(ls.LsOutput)
-	err = json.NewDecoder(resp.Output).Decode(info)
+	err := s.Request("ls", arg).Exec(context.Background(), info)
 	if err != nil {
 		return nil, err
 	}
-
 	return info, nil
 }
