@@ -608,6 +608,7 @@ type SwarmConnInfo struct {
 	Streams []SwarmStreamInfo
 }
 
+// SwarmConnInfos :
 type SwarmConnInfos struct {
 	Peers []SwarmConnInfo
 }
@@ -650,6 +651,98 @@ func (s *Shell) BitswapLedger(arg ...string) (*Receipt, error) {
 func (s *Shell) IpfsLs(arg string) (*ls.LsOutput, error) {
 	info := new(ls.LsOutput)
 	err := s.Request("ls", arg).Exec(context.Background(), info)
+	if err != nil {
+		return nil, err
+	}
+	return info, nil
+}
+
+// RepoFsckOutput :
+type RepoFsckOutput struct {
+	Message string
+}
+
+// RepoFsck : Remove repo lockfiles.
+func (s *Shell) RepoFsck() (*RepoFsckOutput, error) {
+	info := new(RepoFsckOutput)
+	err := s.Request("repo/fsck").Exec(context.Background(), info)
+	if err != nil {
+		return nil, err
+	}
+	return info, nil
+}
+
+// RepoGCOutput :
+type RepoGCOutput struct {
+	Key   string
+	Error string
+}
+
+// RepoGC : Perform a garbage collection sweep on the repo.
+// quiet [bool]: Write minimal output. Default: “false”. Required: no.
+// stream-errors [bool]: Stream errors. Default: “false”. Required: no.
+func (s *Shell) RepoGC(quiet, streamErrors bool) (*RepoGCOutput, error) {
+	info := new(RepoGCOutput)
+	err := s.Request("repo/gc").
+		Option("quiet", quiet).
+		Option("stream-errors", streamErrors).
+		Exec(context.Background(), info)
+	if err != nil {
+		return nil, err
+	}
+	return info, nil
+}
+
+// StatOutput :
+type StatOutput struct {
+	NumObjects uint64
+	RepoSize   uint64
+	RepoPath   string
+	Version    string
+	StorageMax uint64
+}
+
+// RepoStat : Get stats for the currently used repo.
+// human [bool]: Output RepoSize in MiB. Default: “false”. Required: no.
+func (s *Shell) RepoStat(human bool) (*StatOutput, error) {
+	info := new(StatOutput)
+	err := s.Request("repo/stat").
+		Option("human", human).
+		Exec(context.Background(), info)
+	if err != nil {
+		return nil, err
+	}
+	return info, nil
+}
+
+// RepoVerifyOutput :
+type RepoVerifyOutput struct {
+	Message  string
+	Progress int
+}
+
+// RepoVerify : Verify all blocks in repo are not corrupted.
+func (s *Shell) RepoVerify() (*RepoVerifyOutput, error) {
+	info := new(RepoVerifyOutput)
+	err := s.Request("repo/verify").Exec(context.Background(), info)
+	if err != nil {
+		return nil, err
+	}
+	return info, nil
+}
+
+// RepoVersionOutput :
+type RepoVersionOutput struct {
+	Version string
+}
+
+// RepoVersion : Show the repo version.
+// quiet [bool]: Write minimal output. Required: no.
+func (s *Shell) RepoVersion(quiet bool) (*RepoVersionOutput, error) {
+	info := new(RepoVersionOutput)
+	err := s.Request("repo/version").
+		Option("quiet", quiet).
+		Exec(context.Background(), info)
 	if err != nil {
 		return nil, err
 	}
