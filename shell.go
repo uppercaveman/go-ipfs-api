@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	cid "github.com/ipfs/go-cid"
 	files "github.com/ipfs/go-ipfs-cmdkit/files"
 	p2pmetrics "github.com/libp2p/go-libp2p-metrics"
 	homedir "github.com/mitchellh/go-homedir"
@@ -674,7 +675,7 @@ func (s *Shell) RepoFsck() (*RepoFsckOutput, error) {
 
 // RepoGCOutput :
 type RepoGCOutput struct {
-	Key   string
+	Key   *cid.Cid
 	Error string
 }
 
