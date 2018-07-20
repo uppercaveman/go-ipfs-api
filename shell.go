@@ -393,10 +393,15 @@ func (s *Shell) PatchData(root string, set bool, data interface{}) (string, erro
 	return info.Hash, nil
 }
 
+// PatchLink : Add a link to a given object.
+// arg [string]: The hash of the node to modify. Required: yes.
+// arg [string]: Name of link to create. Required: yes.
+// arg [string]: IPFS object to add link to. Required: yes.
+// create [bool]: Create intermediary nodes. Default: “false”. Required: no.
 func (s *Shell) PatchLink(root, path, childhash string, create bool) (string, error) {
 	info := new(object)
 	err := s.Request("object/patch/add-link", root, path, childhash).
-		Option("create", true).
+		Option("create", create).
 		Exec(context.Background(), info)
 	if err != nil {
 		return "", err
@@ -419,6 +424,8 @@ func (s *Shell) Get(hash, outdir string) error {
 	return extractor.Extract(resp.Output)
 }
 
+// NewObject : Create a new object from an ipfs template.
+// arg [string]: Template to use. Optional. Required: no.
 func (s *Shell) NewObject(template string) (string, error) {
 	var out object
 	req := s.Request("object/new")
@@ -440,7 +447,7 @@ func (s *Shell) ResolvePath(path string) (string, error) {
 	return strings.TrimPrefix(out.Path, "/ipfs/"), nil
 }
 
-// returns ipfs version and commit sha
+// Version : returns ipfs version and commit sha
 func (s *Shell) Version() (string, string, error) {
 	ver := struct {
 		Version string
@@ -453,11 +460,13 @@ func (s *Shell) Version() (string, string, error) {
 	return ver.Version, ver.Commit, nil
 }
 
+// IsUp : return bool
 func (s *Shell) IsUp() bool {
 	_, _, err := s.Version()
 	return err == nil
 }
 
+// BlockStat :
 func (s *Shell) BlockStat(path string) (string, int, error) {
 	var inf struct {
 		Key  string
