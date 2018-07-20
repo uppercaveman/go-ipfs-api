@@ -638,6 +638,20 @@ func (s *Shell) SwarmPeers(verbose, streams, latency bool) (*SwarmConnInfos, err
 	return info, nil
 }
 
+type swarmConnection struct {
+	Strings []string
+}
+
+// SwarmConnect : opens a swarm connection to a specific address.
+func (s *Shell) SwarmConnect(addr ...string) error {
+	info := new(swarmConnection)
+	err := s.Request("swarm/connect").Arguments(addr...).Exec(context.Background(), info)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 // Receipt : Receipt
 type Receipt struct {
 	Peer      string
